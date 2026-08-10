@@ -19,7 +19,7 @@ const std::string CLIENT_NAME("Ravencoin");
 /**
  * Client version number
  */
-#define CLIENT_VERSION_SUFFIX ""
+#define CLIENT_VERSION_SUFFIX "-hf1"
 
 
 /**
