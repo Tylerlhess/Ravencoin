@@ -16,7 +16,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <base58.h>
+#include <chainparams.h>
 #include <consensus/tx_verify.h>
+#include <consensus/validation.h>
+#include <script/standard.h>
 #include <validation.h>
 
 namespace {
@@ -212,7 +216,8 @@ BOOST_AUTO_TEST_CASE(verify_transfer_and_null_data_scripts)
     BOOST_CHECK(AssetNullDataFromScript(tagScript, parsed, addr));
     BOOST_CHECK(AssetNullDataFromScript(freezeScript, parsed, addr));
     BOOST_CHECK(GlobalAssetNullDataFromScript(globalScript, parsed));
-    BOOST_CHECK(CheckVerifierAssetTxOut(CTxOut(0, verifierScript)));
+    std::string verifyErr;
+    BOOST_CHECK(CheckVerifierAssetTxOut(CTxOut(0, verifierScript), verifyErr));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

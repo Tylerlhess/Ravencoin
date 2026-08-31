@@ -5828,6 +5828,11 @@ void SetTransferOverflow(bool value) {
     fCheckTransferOverflowIsActive = value;
 }
 
+void SetTransferScriptsSizeActive(bool value)
+{
+    fTransferScriptIsActive = value;
+}
+
 void SetMineableAssetsActive(bool value)
 {
     fMineableAssetsIsActive = value;

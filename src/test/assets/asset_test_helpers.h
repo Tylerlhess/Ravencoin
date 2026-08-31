@@ -7,6 +7,8 @@
 
 #include <assets/assets.h>
 #include <assets/mineable.h>
+#include <base58.h>
+#include <chainparams.h>
 #include <consensus/consensus.h>
 #include <consensus/tx_verify.h>
 #include <key.h>
@@ -29,6 +31,7 @@ inline void ActivateAllAssetFeaturesForTest()
     SetEnforcedValues(true);
     SetEnforcedCoinbase(true);
     SetTransferOverflow(true);
+    SetTransferScriptsSizeActive(true);
     fAssetIndex = true;
 }
 
@@ -73,8 +76,7 @@ struct AssetChainHelper
 
     void SignPrevout(CMutableTransaction& tx, unsigned int nIn, const CTransaction& prevTx) const
     {
-        const CAmount amount = prevTx.vout[tx.vin[nIn].prevout.n].nValue;
-        if (!SignSignature(keystore, prevTx, tx, nIn, amount, SIGHASH_ALL))
+        if (!SignSignature(keystore, prevTx, tx, nIn, SIGHASH_ALL))
             throw std::runtime_error("SignSignature failed");
     }
 

@@ -609,6 +609,7 @@ bool IsTransferOverflowCheckDeployed();
 void SetEnforcedValues(bool value);
 void SetEnforcedCoinbase(bool value);
 void SetTransferOverflow(bool value);
+void SetTransferScriptsSizeActive(bool value);
 void SetMineableAssetsActive(bool value);
 void SetAssetsActive(bool value);
 void SetRip5AssetsActive(bool value);

@@ -253,7 +253,7 @@ CAmount CalculateMineableExtensionCost(const CMineableSchedule& schedule, CAmoun
 
     const int effectiveNewNth = nNewNthBlock > 0 ? nNewNthBlock : schedule.nNthBlock;
     if (effectiveNewNth != schedule.nNthBlock) {
-        if (effectiveNewNth == 1 && schedule.nNthBlock % effectiveNewNth != 0) {
+        if (effectiveNewNth == 1 && schedule.nNthBlock > 1) {
             const int remaining = schedule.GetTotalPeriods() - schedule.nClaimedPeriods;
             if (remaining > 0)
                 cost += static_cast<CAmount>(remaining) * (schedule.nNthBlock - 1) * MINEABLE_COST_PER_PERIOD;
@@ -473,9 +473,9 @@ static bool DeserializeIssueMineableFromScript(const CScript& script, CIssueMine
     if (!script.IsAssetScript(nType, fIsOwner, nStartingIndex) || nType != TX_ISSUE_MINEABLE)
         return false;
 
-    CDataStream ssAsset(SER_NETWORK, PROTOCOL_VERSION);
-    ssAsset << script;
-    ssAsset.seek(nStartingIndex);
+    std::vector<unsigned char> vchAsset;
+    vchAsset.insert(vchAsset.end(), script.begin() + nStartingIndex, script.end());
+    CDataStream ssAsset(vchAsset, SER_NETWORK, PROTOCOL_VERSION);
     try {
         ssAsset >> issue;
     } catch (const std::exception&) {
@@ -484,7 +484,8 @@ static bool DeserializeIssueMineableFromScript(const CScript& script, CIssueMine
 
     txnouttype type;
     std::vector<CTxDestination> vDest;
-    if (!ExtractDestinations(script, type, vDest, address) || vDest.empty())
+    int nRequired = 0;
+    if (!ExtractDestinations(script, type, vDest, nRequired) || vDest.empty())
         return false;
     address = EncodeDestination(vDest[0]);
     return true;
@@ -497,9 +498,11 @@ bool IssueMineableFromScript(const CScript& script, CIssueMineable& issue, std::
 
 bool IssueMineableFromTransaction(const CTransaction& tx, CIssueMineable& issue, std::string& address)
 {
-    if (tx.vout.empty())
-        return false;
-    return IssueMineableFromScript(tx.vout[tx.vout.size() - 1].scriptPubKey, issue, address);
+    for (const auto& out : tx.vout) {
+        if (IsScriptIssueMineableAsset(out.scriptPubKey))
+            return IssueMineableFromScript(out.scriptPubKey, issue, address);
+    }
+    return false;
 }
 
 static bool DeserializeReissueMineableFromScript(const CScript& script, CReissueMineableSchedule& reissue, std::string& address)
@@ -510,9 +513,9 @@ static bool DeserializeReissueMineableFromScript(const CScript& script, CReissue
     if (!script.IsAssetScript(nType, fIsOwner, nStartingIndex) || nType != TX_REISSUE_MINEABLE)
         return false;
 
-    CDataStream ssAsset(SER_NETWORK, PROTOCOL_VERSION);
-    ssAsset << script;
-    ssAsset.seek(nStartingIndex);
+    std::vector<unsigned char> vchAsset;
+    vchAsset.insert(vchAsset.end(), script.begin() + nStartingIndex, script.end());
+    CDataStream ssAsset(vchAsset, SER_NETWORK, PROTOCOL_VERSION);
     try {
         ssAsset >> reissue;
     } catch (const std::exception&) {
@@ -521,7 +524,8 @@ static bool DeserializeReissueMineableFromScript(const CScript& script, CReissue
 
     txnouttype type;
     std::vector<CTxDestination> vDest;
-    if (!ExtractDestinations(script, type, vDest, address) || vDest.empty())
+    int nRequired = 0;
+    if (!ExtractDestinations(script, type, vDest, nRequired) || vDest.empty())
         return false;
     address = EncodeDestination(vDest[0]);
     return true;
@@ -534,9 +538,11 @@ bool ReissueMineableFromScript(const CScript& script, CReissueMineableSchedule& 
 
 bool ReissueMineableFromTransaction(const CTransaction& tx, CReissueMineableSchedule& reissue, std::string& address)
 {
-    if (tx.vout.empty())
-        return false;
-    return ReissueMineableFromScript(tx.vout[tx.vout.size() - 1].scriptPubKey, reissue, address);
+    for (const auto& out : tx.vout) {
+        if (IsScriptReissueMineableAsset(out.scriptPubKey))
+            return ReissueMineableFromScript(out.scriptPubKey, reissue, address);
+    }
+    return false;
 }
 
 bool IsMineableCoinbaseAssetOutput(const CTxOut& out, CAssetTransfer& transfer, std::string& address)

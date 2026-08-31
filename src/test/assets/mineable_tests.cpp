@@ -6,6 +6,7 @@
 #include <assets/mineable.h>
 #include <assets/mineabledb.h>
 
+#include <test/assets/asset_test_helpers.h>
 #include <test/test_raven.h>
 
 #include <boost/test/unit_test.hpp>
@@ -69,8 +70,8 @@ struct MineableChainHelper
     std::map<std::string, COutPoint> ownerOutpoints;
     std::map<std::string, CMutableTransaction> rootIssueTxs;
 
-    explicit MineableChainHelper(TestChain100Setup& setup)
-        : chain(setup), miner(MinerScript(setup.coinbaseKey)), nextCoinbase(0), assetSerial(0)
+    explicit     MineableChainHelper(TestChain100Setup& setup)
+        : chain(setup), miner(GetScriptForDestination(setup.coinbaseKey.GetPubKey().GetID())), nextCoinbase(0), assetSerial(0)
     {
         keystore.AddKey(setup.coinbaseKey);
     }
@@ -82,8 +83,7 @@ struct MineableChainHelper
 
     void SignPrevout(CMutableTransaction& tx, unsigned int nIn, const CTransaction& prevTx) const
     {
-        const CAmount amount = prevTx.vout[tx.vin[nIn].prevout.n].nValue;
-        BOOST_REQUIRE(SignSignature(keystore, prevTx, tx, nIn, amount, SIGHASH_ALL));
+        BOOST_REQUIRE(SignSignature(keystore, prevTx, tx, nIn, SIGHASH_ALL));
     }
 
     void AppendCoinbaseInput(CMutableTransaction& tx)
@@ -102,10 +102,10 @@ struct MineableChainHelper
         CScript ownerScript = miner;
         asset.ConstructOwnerTransaction(ownerScript);
         tx.vout.emplace_back(0, ownerScript);
+        tx.vout.emplace_back(50 * COIN, miner);
         CScript assetScript = miner;
         asset.ConstructTransaction(assetScript);
         tx.vout.emplace_back(0, assetScript);
-        tx.vout.emplace_back(50 * COIN, miner);
         SignPrevout(tx, 0, chain.coinbaseTxns[nextCoinbase - 1]);
         return tx;
     }
@@ -125,10 +125,10 @@ struct MineableChainHelper
         AppendCoinbaseInput(tx);
         const CAmount burn = CalculateMineableIssuanceCost(issue);
         tx.vout.emplace_back(burn, IssueBurnScript());
+        tx.vout.emplace_back(50 * COIN, miner);
         CScript mineScript = miner;
         issue.ConstructTransaction(mineScript);
         tx.vout.emplace_back(0, mineScript);
-        tx.vout.emplace_back(50 * COIN, miner);
         SignPrevout(tx, 0, chain.coinbaseTxns[nextCoinbase - 1]);
         return tx;
     }
@@ -184,11 +184,11 @@ struct MineableChainHelper
         CScript ownerScript = miner;
         ownerReturn.ConstructTransaction(ownerScript);
         tx.vout.emplace_back(0, ownerScript);
+        if (burn > 0)
+            tx.vout.emplace_back(50 * COIN, miner);
         CScript reissueScript = miner;
         reissue.ConstructTransaction(reissueScript);
         tx.vout.emplace_back(0, reissueScript);
-        if (burn > 0)
-            tx.vout.emplace_back(50 * COIN, miner);
 
         SignPrevout(tx, 0, rootIssueTxs.at(schedule.strRootAsset));
         if (burn > 0)
@@ -210,17 +210,18 @@ struct MineableChainHelper
             chain.CreateAndProcessBlock({}, miner);
     }
 
-    CAmount AccruedForAsset(const std::string& mineableAsset) const
+    CAmount AccruedForAsset(const std::string& mineableAsset, int atHeight = -1) const
     {
         CMineableSchedule live;
         pmineabledb->ReadSchedule(mineableAsset, live);
-        live.UpdateMaturity(chainActive.Height());
+        const int height = atHeight >= 0 ? atHeight : chainActive.Height();
+        live.UpdateMaturity(height);
         return live.GetAccruedAmount();
     }
 
     void ClaimAsset(const std::string& mineableAsset)
     {
-        const CAmount amt = AccruedForAsset(mineableAsset);
+        const CAmount amt = AccruedForAsset(mineableAsset, chainActive.Height() + 1);
         BOOST_REQUIRE(amt > 0);
         std::map<std::string, CAmount> claims;
         claims[mineableAsset] = amt;
@@ -248,12 +249,18 @@ struct MineableChainHelper
 };
 
 CMutableTransaction BuildReissueMineableTx(const CReissueMineableSchedule& reissue, CAmount burn,
-                                           const CScript& destScript)
+                                           const CScript& destScript, const std::string& rootAsset = "")
 {
     CMutableTransaction tx;
     if (burn > 0) {
         tx.vout.emplace_back(burn, GetScriptForDestination(
             DecodeDestination(GetParams().IssueAssetBurnAddress())));
+    }
+    if (!rootAsset.empty()) {
+        CAssetTransfer ownerReturn(rootAsset + OWNER_TAG, OWNER_ASSET_AMOUNT);
+        CScript ownerScript = destScript;
+        ownerReturn.ConstructTransaction(ownerScript);
+        tx.vout.emplace_back(0, ownerScript);
     }
     CScript script = destScript;
     reissue.ConstructTransaction(script);
@@ -277,7 +284,7 @@ BOOST_FIXTURE_TEST_SUITE(mineable_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(mineable_accrual_math)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("ROOTA", 1000 * COIN, 100 * COIN, 10, 100);
     s.UpdateMaturity(110);
     BOOST_CHECK_EQUAL(s.nMaturedPeriods, 1);
@@ -296,7 +303,7 @@ BOOST_AUTO_TEST_CASE(mineable_accrual_math)
 
 BOOST_AUTO_TEST_CASE(mineable_delayed_claim_accrual)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("ROOTB", 500 * COIN, 50 * COIN, 5, 200);
     s.UpdateMaturity(220);
     BOOST_CHECK_EQUAL(s.nMaturedPeriods, 4);
@@ -408,8 +415,8 @@ BOOST_AUTO_TEST_CASE(mineable_db_persistence_restart)
 
 BOOST_AUTO_TEST_CASE(mineable_coinbase_claim_validation)
 {
-    SetMineableAssetsActive(true);
-    CMineableSchedule s = MakeSchedule("ROOTK", 300 * COIN, 100 * COIN, 5, chainActive.Height());
+    ActivateAllAssetFeaturesForTest();
+    CMineableSchedule s = MakeSchedule("ROOTK", 300 * COIN, 100 * COIN, 5, chainActive.Height() - 10);
     RegisterScheduleOnChain(s);
 
     const int h = chainActive.Height() + 1;
@@ -422,7 +429,7 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_claim_validation)
     BOOST_CHECK(accrued > 0);
 
     CMutableTransaction coinbase;
-    coinbase.vin.emplace_back(COutPoint(uint256S("00"), 0));
+    coinbase.vin.emplace_back(COutPoint(uint256(), (uint32_t)-1));
     CKey key;
     key.MakeNewKey(true);
     CScript miner = MinerScript(key);
@@ -436,7 +443,7 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_claim_validation)
 
     CAssetTransfer badClaim(s.strMineableAsset, accrued - COIN);
     CMutableTransaction badCoinbase;
-    badCoinbase.vin.emplace_back(COutPoint(uint256S("01"), 0));
+    badCoinbase.vin.emplace_back(COutPoint(uint256(), (uint32_t)-1));
     CScript badScript = miner;
     badClaim.ConstructTransaction(badScript);
     badCoinbase.vout.emplace_back(0, badScript);
@@ -446,8 +453,8 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_claim_validation)
 
 BOOST_AUTO_TEST_CASE(mineable_coinbase_duplicate_miner_claim)
 {
-    SetMineableAssetsActive(true);
-    CMineableSchedule s = MakeSchedule("DUPD", 200 * COIN, 100 * COIN, 2, chainActive.Height());
+    ActivateAllAssetFeaturesForTest();
+    CMineableSchedule s = MakeSchedule("DUPD", 200 * COIN, 100 * COIN, 2, chainActive.Height() - 10);
     RegisterScheduleOnChain(s);
     const int h = chainActive.Height() + 1;
     ProcessMineableMaturityAtHeight(h, *pmineabledb);
@@ -461,7 +468,7 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_duplicate_miner_claim)
     key.MakeNewKey(true);
     CScript miner = MinerScript(key);
     CMutableTransaction coinbase;
-    coinbase.vin.emplace_back(COutPoint(uint256S("02"), 0));
+    coinbase.vin.emplace_back(COutPoint(uint256(), (uint32_t)-1));
     for (int i = 0; i < 2; ++i) {
         CAssetTransfer claim(s.strMineableAsset, amt / 2);
         CScript claimScript = miner;
@@ -474,7 +481,7 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_duplicate_miner_claim)
 
 BOOST_AUTO_TEST_CASE(mineable_coinbase_zero_accrued_rejected)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("ZERO", 100 * COIN, 50 * COIN, 50, chainActive.Height() + 100);
     RegisterScheduleOnChain(s);
     const int h = chainActive.Height() + 1;
@@ -483,7 +490,7 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_zero_accrued_rejected)
     key.MakeNewKey(true);
     CScript miner = MinerScript(key);
     CMutableTransaction coinbase;
-    coinbase.vin.emplace_back(COutPoint(uint256S("03"), 0));
+    coinbase.vin.emplace_back(COutPoint(uint256(), (uint32_t)-1));
     CAssetTransfer claim(s.strMineableAsset, 50 * COIN);
     CScript claimScript = miner;
     claim.ConstructTransaction(claimScript);
@@ -491,6 +498,34 @@ BOOST_AUTO_TEST_CASE(mineable_coinbase_zero_accrued_rejected)
 
     CValidationState state;
     BOOST_CHECK(!ValidateMineableCoinbaseClaims(coinbase, h, passets, *pmineabledb, state));
+}
+
+BOOST_AUTO_TEST_CASE(mineable_issue_script_roundtrip)
+{
+    CIssueMineable issue;
+    issue.strRootAsset = "ROUNDROOT";
+    issue.strMineableAsset = MineableAssetNameFromRoot(issue.strRootAsset);
+    issue.nTotalQty = 1000 * COIN;
+    issue.nPerBlock = 100 * COIN;
+    issue.nNthBlock = 10;
+    issue.nUnits = 0;
+
+    CScript dest = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
+    issue.ConstructTransaction(dest);
+    BOOST_CHECK(dest.IsIssueMineableAsset());
+
+    CIssueMineable issue2 = issue;
+    CKey key;
+    key.MakeNewKey(true);
+    CScript miner = MinerScript(key);
+    issue2.ConstructTransaction(miner);
+    BOOST_CHECK(miner.IsIssueMineableAsset());
+
+    CIssueMineable parsed;
+    std::string address;
+    BOOST_CHECK(IssueMineableFromScript(dest, parsed, address));
+    BOOST_CHECK_EQUAL(parsed.strRootAsset, issue.strRootAsset);
+    BOOST_CHECK_EQUAL(parsed.nTotalQty, issue.nTotalQty);
 }
 
 BOOST_AUTO_TEST_CASE(mineable_reissue_script_roundtrip)
@@ -534,7 +569,7 @@ BOOST_AUTO_TEST_CASE(mineable_issue_fixed_cap_default)
 
 BOOST_AUTO_TEST_CASE(mineable_issue_burn_validation)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     SelectParams(CBaseChainParams::REGTEST);
 
     CIssueMineable issue;
@@ -569,7 +604,7 @@ BOOST_AUTO_TEST_CASE(mineable_issue_burn_validation)
 
 BOOST_AUTO_TEST_CASE(mineable_reissue_burn_validation)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("BURNEXT", 500 * COIN, 50 * COIN, 7, 10, true, 1000 * COIN);
     RegisterScheduleOnChain(s);
 
@@ -579,7 +614,7 @@ BOOST_AUTO_TEST_CASE(mineable_reissue_burn_validation)
     const CAmount burn = CalculateMineableExtensionCost(s, reissue.nAddQty, 0);
 
     CScript dest = GetScriptForDestination(DecodeDestination(GetParams().GlobalBurnAddress()));
-    CMutableTransaction tx = BuildReissueMineableTx(reissue, burn, dest);
+    CMutableTransaction tx = BuildReissueMineableTx(reissue, burn, dest, s.strRootAsset);
     CTransaction ctx(tx);
     std::string err;
     BOOST_CHECK(ctx.VerifyReissueMineable(err));
@@ -595,7 +630,7 @@ BOOST_FIXTURE_TEST_SUITE(mineable_chain_tests, TestChain100Setup)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_mine_and_claim)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     const int base = chainActive.Height();
     CMineableSchedule s = MakeSchedule("CHAIN1", 400 * COIN, 100 * COIN, 4, base + 1);
     RegisterScheduleOnChain(s);
@@ -611,7 +646,8 @@ BOOST_AUTO_TEST_CASE(mineable_chain_mine_and_claim)
     BOOST_CHECK(accrued >= 100 * COIN);
 
     std::map<std::string, CAmount> claims;
-    claims[s.strMineableAsset] = accrued;
+    live.UpdateMaturity(chainActive.Height() + 1);
+    claims[s.strMineableAsset] = live.GetAccruedAmount();
     CreateAndProcessBlockWithMineableClaims({}, miner, claims);
 
     CMineableSchedule claimed;
@@ -622,7 +658,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_mine_and_claim)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_delayed_claim_full_accrual)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     const int base = chainActive.Height();
     CMineableSchedule s = MakeSchedule("CHAIN2", 600 * COIN, 100 * COIN, 3, base + 1);
     RegisterScheduleOnChain(s);
@@ -639,7 +675,10 @@ BOOST_AUTO_TEST_CASE(mineable_chain_delayed_claim_full_accrual)
 
     CreateAndProcessBlock({}, miner);
     std::map<std::string, CAmount> claims;
-    claims[s.strMineableAsset] = fullAccrued;
+    CMineableSchedule preClaim;
+    pmineabledb->ReadSchedule(s.strMineableAsset, preClaim);
+    preClaim.UpdateMaturity(chainActive.Height() + 1);
+    claims[s.strMineableAsset] = preClaim.GetAccruedAmount();
     CreateAndProcessBlockWithMineableClaims({}, miner, claims);
 
     CMineableSchedule claimed;
@@ -649,7 +688,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_delayed_claim_full_accrual)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_spend_after_claim)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     const int base = chainActive.Height();
     CMineableSchedule s = MakeSchedule("CHAIN3", 200 * COIN, 100 * COIN, 2, base + 1);
     RegisterScheduleOnChain(s);
@@ -664,12 +703,9 @@ BOOST_AUTO_TEST_CASE(mineable_chain_spend_after_claim)
     const CAmount accrued = live.GetAccruedAmount();
 
     std::map<std::string, CAmount> claims;
-    claims[s.strMineableAsset] = accrued;
+    live.UpdateMaturity(chainActive.Height() + 1);
+    claims[s.strMineableAsset] = live.GetAccruedAmount();
     CreateAndProcessBlockWithMineableClaims({}, miner, claims);
-
-    passets->Clear();
-    CValidationState state;
-    ActivateBestChain(state, GetParams());
 
     CMineableSchedule after;
     pmineabledb->ReadSchedule(s.strMineableAsset, after);
@@ -678,7 +714,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_spend_after_claim)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_many_assets_one_block)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     const int base = chainActive.Height();
     const char* roots[] = {"MULTI1", "MULTI2", "MULTI3", "MULTI4", "MULTI5"};
     std::map<std::string, CAmount> claims;
@@ -696,7 +732,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_many_assets_one_block)
         const std::string asset = MineableAssetNameFromRoot(root);
         CMineableSchedule live;
         pmineabledb->ReadSchedule(asset, live);
-        live.UpdateMaturity(chainActive.Height());
+        live.UpdateMaturity(chainActive.Height() + 1);
         claims[asset] = live.GetAccruedAmount();
     }
 
@@ -711,7 +747,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_many_assets_one_block)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_extend_schedule_on_chain)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(500 * COIN, 50 * COIN, 10, true, 1000 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -730,7 +766,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_extend_schedule_on_chain)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_extend_prime_nth_one_recost)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(700 * COIN, 100 * COIN, 7, true, 1400 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -748,7 +784,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_extend_prime_nth_one_recost)
 
 BOOST_AUTO_TEST_CASE(mineable_chain_reject_extend_when_fixed)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("FIXED1", 300 * COIN, 50 * COIN, 5, chainActive.Height() + 1);
     RegisterScheduleOnChain(s);
 
@@ -763,7 +799,7 @@ BOOST_AUTO_TEST_CASE(mineable_chain_reject_extend_when_fixed)
 
 BOOST_AUTO_TEST_CASE(mineable_reissue_requires_owner_token)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     CMineableSchedule s = MakeSchedule("OWNCHK", 500 * COIN, 50 * COIN, 5, 10, true, 1000 * COIN);
     RegisterScheduleOnChain(s);
 
@@ -781,7 +817,7 @@ BOOST_AUTO_TEST_CASE(mineable_reissue_requires_owner_token)
 
 BOOST_AUTO_TEST_CASE(mineable_stress_many_schedules_maturity)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     const int base = chainActive.Height();
     const int count = 20;
     CScript miner = MinerScript(coinbaseKey);
@@ -815,7 +851,7 @@ BOOST_FIXTURE_TEST_SUITE(mineable_e2e_tests, TestChain100Setup)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_issue_root_and_mineable_on_chain)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.NextRootName();
     H.IssueRootOnChain(root);
@@ -830,7 +866,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_issue_root_and_mineable_on_chain)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_full_mint_mine_claim)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(400 * COIN, 100 * COIN, 4);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -847,7 +883,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_full_mint_mine_claim)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_enumerated_assets_sequential_mint)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const int count = 8;
     std::vector<std::string> assets;
@@ -860,7 +896,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_enumerated_assets_sequential_mint)
     H.MineBlocks(6);
     std::map<std::string, CAmount> claims;
     for (const auto& asset : assets) {
-        const CAmount amt = H.AccruedForAsset(asset);
+        const CAmount amt = H.AccruedForAsset(asset, chainActive.Height() + 1);
         if (amt > 0)
             claims[asset] = amt;
     }
@@ -876,7 +912,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_enumerated_assets_sequential_mint)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_payg_extend_while_mining)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(300 * COIN, 50 * COIN, 5, true, 800 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -899,7 +935,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_payg_extend_while_mining)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_reissue_owner_signed_on_chain)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(500 * COIN, 50 * COIN, 10, true, 1000 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -918,7 +954,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_reissue_owner_signed_on_chain)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_prime_nth_one_with_owner_burn)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(700 * COIN, 100 * COIN, 7, true, 1400 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -935,7 +971,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_prime_nth_one_with_owner_burn)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_reject_reissue_non_owner)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(300 * COIN, 50 * COIN, 5, true, 600 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -951,7 +987,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_reject_reissue_non_owner)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_multi_extend_up_to_cap)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.IssueRootAndMineableOnChain(200 * COIN, 50 * COIN, 4, true, 500 * COIN);
     const std::string asset = MineableAssetNameFromRoot(root);
@@ -977,7 +1013,7 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_multi_extend_up_to_cap)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_stress_enumerated_mine_loop)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const int rounds = 5;
     const int perRound = 4;
@@ -1012,15 +1048,16 @@ BOOST_AUTO_TEST_CASE(mineable_e2e_stress_enumerated_mine_loop)
 
 BOOST_AUTO_TEST_CASE(mineable_e2e_verify_issue_tx_before_block)
 {
-    SetMineableAssetsActive(true);
+    ActivateAllAssetFeaturesForTest();
     MineableChainHelper H(*this);
     const std::string root = H.NextRootName();
     H.IssueRootOnChain(root);
     CIssueMineable issue = H.DefaultIssueParams(root, 1000 * COIN, 100 * COIN, 10);
     CMutableTransaction mtx = H.BuildIssueMineableTx(issue);
+    BOOST_CHECK(mtx.vout.back().scriptPubKey.IsIssueMineableAsset());
     CTransaction tx(mtx);
     std::string err;
-    BOOST_CHECK(tx.VerifyIssueMineable(err));
+    BOOST_CHECK_MESSAGE(tx.VerifyIssueMineable(err), err);
     H.IssueMineableOnChain(issue);
     CMineableSchedule sched;
     BOOST_CHECK(pmineabledb->ReadSchedule(issue.strMineableAsset, sched));

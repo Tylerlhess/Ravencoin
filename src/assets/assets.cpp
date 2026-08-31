@@ -24,6 +24,7 @@
 #include "assetdb.h"
 #include "assettypes.h"
 #include "mineable.h"
+#include "mineabledb.h"
 #include "protocol.h"
 #include "wallet/coincontrol.h"
 #include "utilmoneystr.h"
@@ -1471,9 +1472,11 @@ bool CTransaction::IsReissueAsset() const
 
 bool CTransaction::IsIssueMineableAsset() const
 {
-    if (vout.empty())
-        return false;
-    return CheckIssueMineableDataTx(vout[vout.size() - 1]);
+    for (const auto& out : vout) {
+        if (CheckIssueMineableDataTx(out))
+            return true;
+    }
+    return false;
 }
 
 bool CTransaction::VerifyIssueMineable(std::string& strError) const
@@ -1482,7 +1485,15 @@ bool CTransaction::VerifyIssueMineable(std::string& strError) const
         strError = "bad-txns-mineable-vout-size";
         return false;
     }
-    if (!CheckIssueMineableDataTx(vout[vout.size() - 1])) {
+
+    const CTxOut* mineableOut = nullptr;
+    for (const auto& out : vout) {
+        if (CheckIssueMineableDataTx(out)) {
+            mineableOut = &out;
+            break;
+        }
+    }
+    if (!mineableOut) {
         strError = "bad-txns-mineable-data-not-found";
         return false;
     }
@@ -1513,9 +1524,11 @@ bool CTransaction::VerifyIssueMineable(std::string& strError) const
 
 bool CTransaction::IsReissueMineableAsset() const
 {
-    if (vout.empty())
-        return false;
-    return CheckReissueMineableDataTx(vout[vout.size() - 1]);
+    for (const auto& out : vout) {
+        if (CheckReissueMineableDataTx(out))
+            return true;
+    }
+    return false;
 }
 
 bool CTransaction::VerifyReissueMineable(std::string& strError) const
@@ -1524,7 +1537,15 @@ bool CTransaction::VerifyReissueMineable(std::string& strError) const
         strError = "bad-txns-mineable-reissue-vout-size";
         return false;
     }
-    if (!CheckReissueMineableDataTx(vout[vout.size() - 1])) {
+
+    const CTxOut* reissueOut = nullptr;
+    for (const auto& out : vout) {
+        if (CheckReissueMineableDataTx(out)) {
+            reissueOut = &out;
+            break;
+        }
+    }
+    if (!reissueOut) {
         strError = "bad-txns-mineable-reissue-data-not-found";
         return false;
     }
